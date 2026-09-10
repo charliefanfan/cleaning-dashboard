@@ -202,23 +202,11 @@ footer{margin-top:40px;padding-top:20px;border-top:1px solid var(--line);font-si
     <div class="kpi-row" id="kpiRow"></div>
   </div>
 
-  <div class="grid2">
-    <div class="card">
-      <h3>Robot Operating Status</h3>
-      <div class="status-card">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" style="flex:0 0 auto;margin-top:2px;"><circle cx="12" cy="12" r="9" stroke="#8B9994" stroke-width="1.6"/><path d="M12 8v4l3 2" stroke="#8B9994" stroke-width="1.6" stroke-linecap="round"/></svg>
-        <div class="txt">
-          <b>No data</b>
-          <p>Real-time status (online / idle / charging / error / battery level) is not included in this raw task-log export. This must be pulled from the live web/app dashboard once Idriverplus fixes the reporting issue — the export only contains completed task records.</p>
-        </div>
-      </div>
-      <div class="status-row" id="statusChips"></div>
-    </div>
-    <div class="card">
-      <h3>Task Breakdown</h3>
-      <div class="sub"><span id="totalCount"></span> total logged task records</div>
-      <div class="cat-list" id="catList"></div>
-    </div>
+  <div class="card" style="margin-top:32px;">
+    <h3>Task Breakdown</h3>
+    <div class="sub"><span id="totalCount"></span> total logged task records</div>
+    <div class="status-row" id="statusChips" style="margin-bottom:16px;"></div>
+    <div class="cat-list" id="catList"></div>
   </div>
 
   <div class="card" style="margin-top:20px;">
