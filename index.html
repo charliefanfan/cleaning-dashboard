@@ -72,6 +72,7 @@ h1{font-size:30px;font-weight:600;margin:2px 0 0;line-height:1.15;}
 .date-range-bar button:hover{border-color:var(--accent);color:var(--accent-deep);}
 .load-status{background:var(--accent-tint);border:1px solid #BFE0DD;color:var(--accent-deep);font-size:13px;padding:12px 18px;border-radius:4px;margin-top:22px;}
 .load-status.error{background:var(--red-tint);border-color:#E3B6B4;color:var(--red);}
+.load-status.demo{background:var(--amber-tint);border-color:#EAC79A;color:#8A4E12;}
 .load-status.hidden{display:none;}
 .kpi-row{display:grid;grid-template-columns:repeat(6,1fr);border:1px solid var(--line);border-radius:4px;overflow:hidden;background:var(--surface);}
 .kpi{padding:18px 16px;border-right:1px solid var(--line);}
@@ -134,6 +135,8 @@ h1{font-size:30px;font-weight:600;margin:2px 0 0;line-height:1.15;}
 .tab-row{display:flex;gap:6px;margin-bottom:14px;}
 .tab-row button{border:1px solid var(--line);background:var(--surface);padding:7px 14px;border-radius:20px;font-size:12.5px;color:var(--ink-soft);cursor:pointer;font-family:'Inter',sans-serif;}
 .tab-row button.active{background:var(--ink);color:#fff;border-color:var(--ink);}
+.tab-row button.demo-tab{border-color:#EAC79A;color:var(--amber);}
+.tab-row button.demo-tab.active{background:var(--amber);border-color:var(--amber);color:#fff;}
 .tabpane{display:none;}
 .tabpane.active{display:block;}
 
@@ -190,7 +193,9 @@ footer{margin-top:40px;padding-top:20px;border-top:1px solid var(--line);font-si
 
   <div class="load-status" id="loadStatus">Loading pilot data…</div>
 
-  <div class="tab-row" id="vehicleTabs" style="margin-top:22px;"></div>
+  <div class="tab-row" id="sourceTabs" style="margin-top:22px;"></div>
+  <div class="load-status demo" id="demoBanner" style="display:none;">Showing <b>Demo</b> sample data — not from a live Pilot robot. All figures below are synthetic.</div>
+  <div class="tab-row" id="vehicleTabs" style="margin-top:10px;"></div>
 
   <div class="kpi-section">
     <div class="section-label"><span id="rangeLabel">Whole Pilot Period · KPIs computed from valid cleaning sessions only</span><span class="ln"></span></div>
@@ -372,6 +377,9 @@ function parseRow(row){
 }
 
 // ---------- Load manifest.json + one xlsx per vehicle (replace these files to update the dashboard) ----------
+// manifest.json supports two formats:
+//   Old: ["FB0037","FB0057"]                                     → all treated as group "real"
+//   New: [{"id":"FB0037","group":"real"},{"id":"FB00008","group":"demo","label":"Demo"}]
 async function fetchVehicleRows(vehicleId){
   const resp = await fetch(`data_${vehicleId}.xlsx`, {cache:'no-store'});
   if(!resp.ok) throw new Error(`HTTP ${resp.status} fetching data_${vehicleId}.xlsx`);
@@ -381,22 +389,36 @@ async function fetchVehicleRows(vehicleId){
   return XLSX.utils.sheet_to_json(sheet, {defval:''});
 }
 
+function normalizeManifest(raw){
+  return raw.map(entry=>{
+    if(typeof entry === 'string') return {id:entry, group:'real', label:entry};
+    return {id:entry.id, group:entry.group || 'real', label:entry.label || entry.id};
+  });
+}
+
 async function loadRecords(){
   const statusEl = document.getElementById('loadStatus');
   try{
     const manifestResp = await fetch('manifest.json', {cache:'no-store'});
     if(!manifestResp.ok) throw new Error('HTTP '+manifestResp.status+' fetching manifest.json');
-    const vehicleIds = await manifestResp.json();
-    if(!Array.isArray(vehicleIds) || vehicleIds.length===0) throw new Error('manifest.json has no vehicle entries');
+    const rawManifest = await manifestResp.json();
+    if(!Array.isArray(rawManifest) || rawManifest.length===0) throw new Error('manifest.json has no vehicle entries');
+    const manifest = normalizeManifest(rawManifest);
 
     let allRows = [];
-    for(const id of vehicleIds){
-      const rows = await fetchVehicleRows(id);
+    for(const entry of manifest){
+      const rows = await fetchVehicleRows(entry.id);
+      rows.forEach(r=>{ r.__group = entry.group; r.__label = entry.label; });
       allRows = allRows.concat(rows);
     }
     const rows = allRows.filter(r=> (r['Start time']||r['开始时间']||r['Date']||r['日期']));
     if(rows.length===0) throw new Error('Data files were found but contain no rows');
-    const recs = rows.map(parseRow).sort((a,b)=> (a.date+a.start).localeCompare(b.date+b.start));
+    const recs = rows.map(r=>{
+      const rec = parseRow(r);
+      rec.group = r.__group;
+      rec.vehicleLabel = r.__label;
+      return rec;
+    }).sort((a,b)=> (a.date+a.start).localeCompare(b.date+b.start));
     statusEl.classList.add('hidden');
     return recs;
   }catch(err){
@@ -410,9 +432,17 @@ let ALL_RECORDS = [];
 let currentRecords = [];
 let DATA_MIN = null, DATA_MAX = null;
 let selectedVehicle = 'all';
+let selectedGroup = null;
+
+const GROUP_LABELS = {real:'Real Data', demo:'Demo'};
+function groupLabel(g){ return GROUP_LABELS[g] || (g.charAt(0).toUpperCase()+g.slice(1)); }
+
+function recordsInGroup(group){
+  return ALL_RECORDS.filter(r=>r.group===group);
+}
 
 function getBaseFiltered(){
-  let recs = ALL_RECORDS;
+  let recs = selectedGroup ? recordsInGroup(selectedGroup) : ALL_RECORDS;
   if(selectedVehicle !== 'all') recs = recs.filter(r=>r.vin === selectedVehicle);
   const s = startInput.value || DATA_MIN;
   const e = endInput.value || DATA_MAX;
@@ -731,7 +761,7 @@ document.getElementById('periodTabs').addEventListener('click', e=>{
   document.getElementById('pane-'+btn.dataset.p).classList.add('active');
 });
 
-// ---------- Date range picker + vehicle tabs + initial load ----------
+// ---------- Date range picker + source/vehicle tabs + initial load ----------
 const startInput = document.getElementById('rangeStart');
 const endInput = document.getElementById('rangeEnd');
 
@@ -758,7 +788,8 @@ document.getElementById('rangeReset').addEventListener('click', ()=>{
 function updateHeaderForVehicle(vehicleIds){
   if(selectedVehicle==='all'){
     document.getElementById('vinDisplay').textContent = vehicleIds.length ? vehicleIds.join(', ') : 'No data';
-    const types = Array.from(new Set(ALL_RECORDS.map(r=>r.vehicleType).filter(Boolean)));
+    const scoped = selectedGroup ? recordsInGroup(selectedGroup) : ALL_RECORDS;
+    const types = Array.from(new Set(scoped.map(r=>r.vehicleType).filter(Boolean)));
     document.getElementById('vehicleTypeDisplay').textContent = types.length ? types.join(', ') : 'No data';
   } else {
     const rec = ALL_RECORDS.find(r=>r.vin===selectedVehicle);
@@ -767,38 +798,80 @@ function updateHeaderForVehicle(vehicleIds){
   }
 }
 
+function recomputeDateBoundsForGroup(){
+  document.getElementById('demoBanner').style.display = (selectedGroup==='demo') ? '' : 'none';
+  const scoped = selectedGroup ? recordsInGroup(selectedGroup) : ALL_RECORDS;
+  DATA_MIN = scoped.length ? scoped[0].date : null;
+  DATA_MAX = scoped.length ? scoped[scoped.length-1].date : null;
+  document.getElementById('periodDisplay').textContent = DATA_MIN ? `${DATA_MIN} → ${DATA_MAX}` : 'No data';
+  startInput.min = DATA_MIN; startInput.max = DATA_MAX; startInput.value = DATA_MIN;
+  endInput.min = DATA_MIN; endInput.max = DATA_MAX; endInput.value = DATA_MAX;
+  document.getElementById('rangeLabel').textContent = DATA_MIN ? `${DATA_MIN} → ${DATA_MAX} (full Pilot period)` : 'No data';
+}
+
+function buildVehicleTabs(){
+  const scoped = selectedGroup ? recordsInGroup(selectedGroup) : ALL_RECORDS;
+  const vehicleIds = Array.from(new Set(scoped.map(r=>r.vin).filter(Boolean))).sort();
+  const vehicleTabsEl = document.getElementById('vehicleTabs');
+  selectedVehicle = 'all';
+  if(vehicleIds.length > 1){
+    vehicleTabsEl.style.display = '';
+    vehicleTabsEl.innerHTML = [`<button data-v="all" class="active">All Vehicles (${vehicleIds.length})</button>`]
+      .concat(vehicleIds.map(v=>`<button data-v="${v}">${v}</button>`)).join('');
+  } else {
+    vehicleTabsEl.style.display = 'none';
+    vehicleTabsEl.innerHTML = '';
+  }
+  updateHeaderForVehicle(vehicleIds);
+}
+document.getElementById('vehicleTabs').addEventListener('click', e=>{
+  const btn = e.target.closest('button'); if(!btn) return;
+  const vehicleTabsEl = document.getElementById('vehicleTabs');
+  vehicleTabsEl.querySelectorAll('button').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  selectedVehicle = btn.dataset.v;
+  const scoped = selectedGroup ? recordsInGroup(selectedGroup) : ALL_RECORDS;
+  const vehicleIds = Array.from(new Set(scoped.map(r=>r.vin).filter(Boolean))).sort();
+  updateHeaderForVehicle(vehicleIds);
+  applyFilters();
+});
+
+function buildSourceTabs(){
+  const groups = Array.from(new Set(ALL_RECORDS.map(r=>r.group)));
+  const sourceTabsEl = document.getElementById('sourceTabs');
+  if(groups.length <= 1){
+    sourceTabsEl.style.display = 'none';
+    return;
+  }
+  sourceTabsEl.style.display = '';
+  const order = ['real','demo'].filter(g=>groups.includes(g)).concat(groups.filter(g=>!['real','demo'].includes(g)));
+  sourceTabsEl.innerHTML = order.map(g=>{
+    const n = recordsInGroup(g).length ? Array.from(new Set(recordsInGroup(g).map(r=>r.vin))).length : 0;
+    return `<button data-g="${g}" class="${g===selectedGroup?'active':''} ${g==='demo'?'demo-tab':''}">${groupLabel(g)} (${n})</button>`;
+  }).join('');
+  sourceTabsEl.onclick = (e)=>{
+    const btn = e.target.closest('button'); if(!btn) return;
+    sourceTabsEl.querySelectorAll('button').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    selectedGroup = btn.dataset.g;
+    recomputeDateBoundsForGroup();
+    buildVehicleTabs();
+    applyFilters();
+  };
+}
+
 (async function init(){
   ALL_RECORDS = await loadRecords();
   if(ALL_RECORDS.length===0){
     document.getElementById('periodDisplay').textContent = 'No data';
     return;
   }
-  DATA_MIN = ALL_RECORDS[0].date;
-  DATA_MAX = ALL_RECORDS[ALL_RECORDS.length-1].date;
-  document.getElementById('periodDisplay').textContent = `${DATA_MIN} → ${DATA_MAX}`;
+  const groups = Array.from(new Set(ALL_RECORDS.map(r=>r.group)));
+  selectedGroup = groups.includes('real') ? 'real' : groups[0];
 
-  startInput.min = DATA_MIN; startInput.max = DATA_MAX; startInput.value = DATA_MIN;
-  endInput.min = DATA_MIN; endInput.max = DATA_MAX; endInput.value = DATA_MAX;
-  document.getElementById('rangeLabel').textContent = `${DATA_MIN} → ${DATA_MAX} (full Pilot period)`;
-
-  const vehicleIds = Array.from(new Set(ALL_RECORDS.map(r=>r.vin).filter(Boolean))).sort();
-  const vehicleTabsEl = document.getElementById('vehicleTabs');
-  if(vehicleIds.length > 1){
-    vehicleTabsEl.innerHTML = [`<button data-v="all" class="active">All Vehicles (${vehicleIds.length})</button>`]
-      .concat(vehicleIds.map(v=>`<button data-v="${v}">${v}</button>`)).join('');
-    vehicleTabsEl.addEventListener('click', e=>{
-      const btn = e.target.closest('button'); if(!btn) return;
-      vehicleTabsEl.querySelectorAll('button').forEach(b=>b.classList.remove('active'));
-      btn.classList.add('active');
-      selectedVehicle = btn.dataset.v;
-      updateHeaderForVehicle(vehicleIds);
-      applyFilters();
-    });
-  } else {
-    vehicleTabsEl.style.display = 'none';
-  }
-  updateHeaderForVehicle(vehicleIds);
-
+  buildSourceTabs();
+  recomputeDateBoundsForGroup();
+  buildVehicleTabs();
   renderAll(getBaseFiltered());
 })();
 </script>
