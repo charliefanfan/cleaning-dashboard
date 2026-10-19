@@ -335,12 +335,25 @@ function toSqft(sqm){ return sqm * SQFT_PER_SQM; }
 // ---------- Raw spreadsheet row → internal record ----------
 function excelDateTimeToParts(value){
   if(value===undefined || value===null || value==='') return {date:'', time:''};
+  if(typeof value==='string'){
+    const m = value.trim().match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})(?:[ T](\d{1,2}):(\d{2}))?/);
+    if(m){
+      const p=n=>String(n).padStart(2,'0');
+      return {date:`${m[1]}-${p(m[2])}-${p(m[3])}`, time:`${p(m[4]||0)}:${m[5]||'00'}`};
+    }
+  }
   let d = (value instanceof Date) ? value : new Date(value);
   if(isNaN(d.getTime())) return {date:'', time:''};
   const pad = n=>String(n).padStart(2,'0');
   const date = `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}`;
   const time = `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
   return {date, time};
+}
+
+// Tolerant column lookup: matches header by prefix, so a garbled unit like "(©O)" instead of "(㎡)" still works
+function pickCol(row, prefix){
+  const k = Object.keys(row).find(h=>h.trim().toLowerCase().startsWith(prefix.toLowerCase()));
+  return k===undefined ? undefined : row[k];
 }
 
 function parseRow(row){
@@ -352,8 +365,8 @@ function parseRow(row){
   const date = startParts.date || excelDateTimeToParts(dateVal).date;
 
   const durationMin = Number(row['Cleaning time(min)'] ?? row['清洁时长(min)']) || 0;
-  const plannedArea = Number(row['Programmed cleaning area(㎡)'] ?? row['计划清洁面积㎡']) || 0;
-  const actualArea = Number(row['Actual cleaning area(㎡)'] ?? row['实际清洁面积㎡']) || 0;
+  const plannedArea = Number(pickCol(row,'Programmed cleaning area') ?? row['计划清洁面积㎡']) || 0;
+  const actualArea = Number(pickCol(row,'Actual cleaning area') ?? row['实际清洁面积㎡']) || 0;
   const completion = Number(row['Task completion rate(%)'] ?? row['任务完成率%']) || 0;
   const plannedAreaFt = toSqft(plannedArea);
   const actualAreaFt = toSqft(actualArea);
@@ -386,7 +399,16 @@ async function fetchVehicleRows(vehicleId){
   const buf = await resp.arrayBuffer();
   const wb = XLSX.read(buf, {type:'array', cellDates:true});
   const sheet = wb.Sheets[wb.SheetNames[0]];
-  return XLSX.utils.sheet_to_json(sheet, {defval:''});
+  // Read by column POSITION (A-L), ignoring header text entirely:
+  // A vin | B Vehicle name | C Vehicle type | D Date | E Task name | F Cleaning time(min)
+  // G Programmed area | H Actual area | I Efficiency | J Completion % | K Start time | L End time
+  const keys = ['vin','Vehicle name','Vehicle type','Date','Task name','Cleaning time(min)',
+                'Programmed cleaning area(㎡)','Actual cleaning area(㎡)','Cleaning efficiency(㎡/h)',
+                'Task completion rate(%)','Start time','End time'];
+  const aoa = XLSX.utils.sheet_to_json(sheet, {header:1, defval:'', raw:true});
+  return aoa.slice(1)
+    .filter(r=>r.some(c=>c!==''))
+    .map(r=>{ const o={}; keys.forEach((k,i)=>{ o[k]=r[i] ?? ''; }); return o; });
 }
 
 function normalizeManifest(raw){
